@@ -4,7 +4,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request
 
 from app.llm_classifier import classify_text
-from app.storage import insert_submission
+from app.storage import fetch_log, insert_submission
 
 submit_bp = Blueprint("submit", __name__)
 
@@ -50,3 +50,8 @@ def submit():
             "label": "Uncertain",
         }
     ), 200
+
+
+@submit_bp.route("/log", methods=["GET"])
+def log():
+    return jsonify(fetch_log()), 200
