@@ -14,24 +14,29 @@ creators who believe they've been misclassified.
 <!-- TOC -->
 * [Project #4: Provenance Guard](#project-4-provenance-guard)
   * [Table of Contents](#table-of-contents)
-  * [Milestone 1: Understand the System and Define Your Architecture](#milestone-1-understand-the-system-and-define-your-architecture)
+  * [Project Spec](#project-spec)
     * [Path Definition: from submission to a label the user sees](#path-definition-from-submission-to-a-label-the-user-sees)
     * [Detection Signals](#detection-signals)
       * [LLM-based classification](#llm-based-classification)
       * [Stylometrics heuristics](#stylometrics-heuristics)
     * [False positives](#false-positives)
+      * [Appealing false positives](#appealing-false-positives)
     * [API Endpoints](#api-endpoints)
       * [`POST /submit`](#post-submit)
       * [`POST /appeal`](#post-appeal)
       * [`GET /log`](#get-log)
-    * [Diagrams](#diagrams)
+    * [Architecture](#architecture)
       * [Submission Flow](#submission-flow)
       * [Appeal Flow](#appeal-flow)
+    * [AI Tool Plan](#ai-tool-plan)
+      * [Milestone #3: submission endpoint + first signal](#milestone-3-submission-endpoint--first-signal)
+      * [Milestone #4: second signal + confidence scoring](#milestone-4-second-signal--confidence-scoring)
+      * [Milestone #5: production layer](#milestone-5-production-layer)
 <!-- TOC -->
 
 ---
 
-## Milestone 1: Understand the System and Define Your Architecture
+## Project Spec
 
 ### Path Definition: from submission to a label the user sees
 The path starts with the submission of a piece of text, this could be a poem, a short story excerpt, a blog post, etc. 
@@ -64,9 +69,30 @@ Before producing a final label, we **map the final confidence score to internal 
 4. Borderline: formal human writing
 5. Clearly human written
 
+Internal labels will be mapped like this:
+* final_score >= 0.82  →  clearly AI generated
+* final_score >= 0.65  →  borderline: lightly edited AI output
+* final_score >= 0.35  →  uncertain
+* final_score >= 0.18  →  borderline: formal human writing
+* final_score <  0.18  →  clearly human written
+
+These specifics numbers are built outward from 0.5 in a symmetric way, the idea behind this is to have the system
+treat 'likely AI' and 'likely human' with the same bar, it doesn't favor any side:
+```
+The center here is 0.5:
+* 0.35 and 0.65 are both 0.15 away from 0.5
+* 0.18 and 0.82 are both 0.32 away from 0.5
+* the band on the left mirrors the band on the right, where 0.18 is the human equivalent of 0.82, and
+0.35 is the human equivalent of 0.65.
+
+0.0 -------- 0.18 -------- 0.35 -------- 0.65 -------- 0.82 -------- 1.0
+     clearly      borderline     uncertain     borderline     clearly
+      human         human                        AI             AI
+```
+
 The goal of the internal labels is to have a transparent and testable logic. 
 
-The final step is to **generate a final label** that the end user will see, based on internal labels:
+The final step is to collapse internal labels into the final labels the user will see:
 
 * clearly AI → high-confidence AI
 * lightly edited AI output → uncertain (not high-confidence)
@@ -74,9 +100,15 @@ The final step is to **generate a final label** that the end user will see, base
 * formal human writing → uncertain (not high-confidence)
 * clearly human written → high-confidence human
 
+Depending on the label, these are the messages that could be used:
+* high-confidence AI: "This content was assessed as AI-generated (X% confidence)."
+* high-confidence human: "This content was assessed as human-written (X% confidence)."
+* uncertain: "This content could not be confidently attributed (X% confidence). Attribution is uncertain."
+
 The goal of the transparency label is to communicate the attribution result in plain language and make the confidence 
 level meaningful to a non-technical reader. The flow ends after returning a final label that the user sees.
 
+---
 ### Detection Signals
 #### LLM-based classification
 The LLM-based classification focuses on patterns it learned during the model training. 
@@ -119,18 +151,39 @@ naturally has low variance and high structural uniformity, which means they coul
  * Writing style: since this signal focuses on metrics, a minimalist writer has the potential of being flagged as AI, 
 while a maximalist AI prompt could pass as human.
 
+---
 ### False positives
-False positives are something that will eventually happen. Cases like a human writer that submits a short, clean, 
+False positives are something that will eventually happen. Cases like a human writer that submits a clean, 
 formally structure piece of text are highly likely to trigger a false positive. Why? The LLM-based classification will 
 see: flat tone, predictable structure, safe wording and flag it as high AI probability. Stylometrics will see
 low sentence variance and maybe high TTR and will flag it as high AI probability as well. If both signals agree, that 
 means a high confidence score, but the system has no way to know whether this is right or wrong, it simply returns a 
 score. So what will the user see? A label that says "high-confidence AI" on a piece of human written text. 
 
+Another specific scenario where a false positive could be triggered, is where a human who heavily uses repetition as a
+stylistic device, e.g., a poem with something like "We were tired. We were hungry. We were lost." Stylometrics will 
+analyze the piece of text and will into: low sentence length variance, possibly low TTR, and short, uniform sentences.
+This will most likely get triggered as AI. Then the LLM might also read the flatness as AI generated. What happens?
+Both signals agree → high confidence score → false positive.
+
+#### Appealing false positives
 In order to allow the creator to appeal these cases, a **`POST /appeal` endpoint** is provided to capture the creator's 
 reasoning. This endpoint is necessary because false positives are something that we can expect to happen, and the goal 
 of the system is also not to provide a final verdict, but to provide an assessment.
 
+When a creator submits an appeal, the creator's reasoning is stored and logged and the submission's status in changed to
+under review. If a human reviewer open's the appeal queue, they will be able to see all the data related to the submission:
+- original text submitted
+- creator
+- llm scoring
+- stylometrics scoring
+- confidence score
+- internal label
+- final label
+- attribution
+- creator's reasoning
+
+---
 ### API Endpoints
 #### `POST /submit`
 Allows a user to submit a piece of text-based content for attribution.
@@ -150,7 +203,7 @@ the following fields:
 ```json
 {
   "content_id": "A unique id that identifies the submission. Use this value if you want to submit an appeal.",
-  "attribution": "The internal label assigned to the piece of text, e.g., lightly_edited_ai_output",
+  "attribution": "The explanation for the label, e.g., This content was assessed as AI-generated (X% confidence).",
   "confidence": "A float value that represents the confidence score, e.g., 0.75",
   "label": "The label for the end user: Uncertain"
 }
@@ -201,30 +254,39 @@ The endpoint returns a `200 HTTP` status code and a JSON response with a list of
 ```json
 [
   {
-    "content_id": "3f7a2b1e-...",
+    "content_id": "1f2i4e5a-...",
     "creator_id": "test-user-1",
     "timestamp": "20250401143210",
-    "attribution": "likely_ai",
+    "internal_label": "clearly AI",
+    "attribution": "This content was assessed as AI-generated (X% confidence)",
     "confidence": 0.78,
     "llm_score": 0.81,
     "stylometrics_score": 0.56,
+    "label":  "high-confidence AI",
     "status": "classified"
   },
   {
     "content_id": "3f7a2b1e-...",
     "creator_id": "test-user-1",
     "timestamp": "20250401143210",
-    "attribution": "likely_ai",
+    "internal_label": "clearly AI",
+    "attribution": "This content was assessed as AI-generated (X% confidence)",
     "confidence": 0.78,
     "llm_score": 0.81,
     "stylometrics_score": 0.56,
+    "label":  "high-confidence AI",
     "status": "under_review"
   }
 ]
 ```
-
-### Diagrams
+---
+### Architecture
 #### Submission Flow
+In the submission flow, the `POST /submit` endpoint receives a piece of text and a creator id. We start by generating 
+a content_id for the submission, then the multi-signal detection pipeline evaluates the piece of text. Based on the results,
+a confidence score is computed, this gets converted into a final label, the task is logged and a response is returned
+to the user.
+
 ```
 POST /submit
 (text, creator_id)
@@ -264,11 +326,15 @@ external_label, timestamp
         │
         v
 [Response]
-content_id, attribution (internal_label),
+content_id, attribution (human readable string that explains label),
 confidence (final_score), label (external_label)
 ```
 
 #### Appeal Flow
+In the appeal flow, the `POST /appeal` endpoint receives a content_id and the creator's reasoning for the appeal.
+The original content decision is retrieved, and its status is changed to 'under_review'. Finally, the appeal is logged 
+in the system and a response is returned.
+
 ```
 POST /appeal
 (content_id, creator_reasoning)
@@ -292,5 +358,59 @@ original label, status change, timestamp
 content_id, status (under_review),
 message ("Appeal received and is under review")
 ```
-
 ---
+
+### AI Tool Plan
+
+[//]: # (TODO: make sure to update this section if end up implementing a stretch feature using AI)
+
+#### Milestone #3: submission endpoint + first signal
+_**Which section I'll give the AI**_:
+I'll provide the AI the following sections of my spec: [POST /submit](#post-submit), [Submission Flow](#submission-flow),
+and [LLM-based classification](#llm-based-classification).
+
+_**What I'll ask it to generate**_:
+I'll ask it to generate:
+* A RESTful Flask app skeleton.
+* A basic `POST /submit` endpoint that receives a JSON and returns a static response.
+* A function that receives a piece of text and uses an LLM call to determine if the piece of text was AI generated.
+
+_**How do I plan to verify the output**_:
+For the `POST /submit` endpoint, I plan to test it out using Postman.
+
+For the LLM call, I'll test it out manually using a mix of pieces of text written by me and generated by AI.
+
+#### Milestone #4: second signal + confidence scoring
+_**Which section I'll give the AI**_:
+I'll provide the AI the following sections of my spec: [Stylometrics Heuristics](#stylometrics-heuristics), 
+[Submission Flow](#submission-flow), and [Path Definition](#path-definition-from-submission-to-a-label-the-user-sees).
+
+_**What I'll ask it to generate**_:
+I'll ask it to generate:
+* A function that receives a piece of text and uses pure Python to capture the metrics defined in the Stylometrics 
+Heuristics section.
+* A function that receives the score from both the LLM call and the stylometrics heuristics and performs a weighted 
+average scoring + divergence check. The function then returns a final confidence scoring.
+
+_**How do I plan to verify the output**_:
+I plan to verify each function individually. For the stylometrics evaluation, I will test it out manually using a mix of 
+pieces of text written by me and generated by AI.
+
+For the scoring function, I'll test it out manually using different combinations of evaluation results: both signals agree,
+only one signal agrees, both signals disagree.
+
+#### Milestone #5: production layer
+_**Which section I'll give the AI**_:
+I'll provide the AI the following sections of my spec: [Appeal Flow](#appeal-flow) and 
+[Path Definition](#path-definition-from-submission-to-a-label-the-user-sees).
+
+_**What I'll ask it to generate**_:
+I'll ask it to generate:
+* A basic `POST /appeal` endpoint that receives a JSON and returns a static response.
+* A function that returns the final label and attribution based on the internal label assigned to a submission.
+
+_**How do I plan to verify the output**_:
+For the `POST /appeal` endpoint, I plan to test it out using Postman.
+
+For the function, I plan to test it out manually using different submissions previously stored during the testing of 
+other functions. The idea is to generate final labels to submissions that already have an internal label assigned.
