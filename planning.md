@@ -19,6 +19,7 @@ creators who believe they've been misclassified.
     * [Detection Signals](#detection-signals)
       * [LLM-based classification](#llm-based-classification)
       * [Stylometrics heuristics](#stylometrics-heuristics)
+        * [Why these metrics?](#why-these-metrics)
     * [False positives](#false-positives)
       * [Appealing false positives](#appealing-false-positives)
     * [API Endpoints](#api-endpoints)
@@ -46,8 +47,8 @@ Once a piece of text has been received, the next step is to run a **multi-signal
 signal that uses the following strategies:
 1. **LLM-based classification**: powered by llama-3.3-70b-versatile via Groq, we use an LLM call to assess whether the text
    reads as human or AI-generated. 
-2. **Stylometrics heuristics**: using pure Python, we measure 3 specific statistical properties that differ from human and 
-AI writing: sentence length variance, type-token ratio (vocabulary diversity), and average sentence complexity.
+2. **Stylometrics heuristics**: using pure Python, we measure 2 specific aspects that differ from human and 
+AI writing: sentence length variance (burstiness) and the punctuation entropy.
 
 Both strategies return a score in a range from 0.0 to 1.0 that represent the likelihood of AI-generated text (the higher,
 the more likely it is AI-generated).
@@ -136,35 +137,68 @@ Stylometrics measures the statistical shape of writing. Instead of focusing on w
 structure.
 
 The three metrics that will be used capture a different dimension of the structure:
-* **Sentence length variance**: how much sentence length fluctuates across the text
-* **Type-token ratio (TTR)**: vocabulary diversity → how many unique words appear relative to the total words
-* **Average sentence complexity**: average number of words per sentence (syntactic depth)
+* **Sentence length variance (burstiness)**: how much sentence length fluctuates throughout a piece of text
+* **Punctuation entropy**: measures how evenly distributed punctuation is across different mark types
 
 AI writing is optimized for clarity and fluency, which results on statistical uniformity. Human written text is known 
 for being irregular.
 
 Some blind spots for this detection signal are:
- * Text length dependency: TTR degrades on short pieces of text. A 50-word poem will naturally have a high TTR. This 
-metric is more reliable on longer pieces of text.
- * Text domain: formal academic writing, legal text, or journalism are all examples of formal human writing that
-naturally has low variance and high structural uniformity, which means they could result in a high AI score.
- * Writing style: since this signal focuses on metrics, a minimalist writer has the potential of being flagged as AI, 
-while a maximalist AI prompt could pass as human.
+* Text length dependency: burstiness requires enough sentences to produce a meaningful standard deviation. 
+Short texts under 5–6 sentences will produce unreliable scores regardless of the author.
+* Text domain: formal academic writing, legal text, and journalism are written by humans but naturally have low 
+burstiness: structured, uniform sentence lengths are a feature of that style, not a sign of AI.
+* Writing style: a minimalist human writer who deliberately uses short, consistent sentences will score as AI on 
+burstiness. A maximalist AI prompt with varied sentence lengths can pass as human.
+* Punctuation conventions: some genres naturally use narrow punctuation sets, e.g., screenplays, legal contracts, 
+technical documentation. This is not because they are AI-generated, but because their format constrains punctuation 
+choice. This will produce low entropy scores on human-written text.
+* Model evolution: AI punctuation fingerprints (em dash overuse, semicolon frequency) are artifacts of current training 
+data. As training data and fine-tuning evolve, these patterns may shift, reducing the reliability of punctuation entropy 
+as a long-term signal.
+
+##### Why these metrics?
+I am adding this section to further explain why my stylometrics heuristics evaluation is using burstiness and punctuation
+entropy, as they feel rather complex, and it took me some time to fully understand. 
+
+Let's start with burstiness: it measures how much sentence length fluctuates throughout a piece of text. The formula is 
+σ / μ: standard deviation of sentence lengths divided by their mean. A high burstiness score means the writing alternates 
+between short and long sentences unpredictably. A low score means sentence lengths are uniform throughout.
+
+Human writing is naturally bursty. While AI writing is optimized for fluency and coherence at the token level, which 
+produces sentences of similar length throughout. This is backed by research on LLM output patterns, and is also known to
+be used by AI detectors such as GPTZero. Human writing scores 0.65–0.85, AI models score 0.15–0.30. This gap is large 
+enough that burstiness alone is one of the strongest single signals in stylometric detection.
+
+Now, punctuation entropy: it measures how evenly distributed punctuation is across different mark types. Here, high 
+entropy means many different marks appear with varied frequency, the pattern is unpredictable. Low entropy means a 
+narrow set of marks dominates uniformly. Human writing produces messier and more varied distributions. On the other side, 
+AI uses a narrow, predictable set of marks uniformly. AI also overuses semicolons and underuses ellipses, 
+apostrophes (contractions), and exclamation marks.
+
+Punctuation entropy is therefore a strong signal because AI punctuation is "polished" in a way that's statistically 
+detectable: low entropy, over-reliance on a small subset of marks.
+
+Sources worth reading to understand these metrics:
+- [Feature-Based Detection of AI-Generated Text: An Analysis of Stylometric and Perplexity Markers in Contemporary Large Language Models](https://www.researchgate.net/publication/398588043_Feature-Based_Detection_of_AI-Generated_Text_An_Analysis_of_Stylometric_and_Perplexity_Markers_in_Contemporary_Large_Language_Models)
+- [The Last Fingerprint: How Markdown Training Shapes LLM Prose](https://arxiv.org/pdf/2603.27006)
+- [Stylometric Detection of AI-Generated Text in Twitter Timelines](https://arxiv.org/pdf/2303.03697)
+- [Can Stylometry Detect AI Authorship? Methods Explained](https://hastewire.com/blog/can-stylometry-detect-ai-authorship-methods-explained)
 
 ---
 ### False positives
-False positives are something that will eventually happen. Cases like a human writer that submits a clean, 
-formally structure piece of text are highly likely to trigger a false positive. Why? The LLM-based classification will 
-see: flat tone, predictable structure, safe wording and flag it as high AI probability. Stylometrics will see
-low sentence variance and maybe high TTR and will flag it as high AI probability as well. If both signals agree, that 
-means a high confidence score, but the system has no way to know whether this is right or wrong, it simply returns a 
-score. So what will the user see? A label that says "high-confidence AI" on a piece of human written text. 
+False positives are something that will eventually happen. Cases like a human writer that submits a clean, formally 
+structured piece of text are highly likely to trigger a false positive. Why? The LLM-based classification will see: 
+flat tone, predictable structure, safe wording and flag it as high AI probability. Stylometrics will see low burstiness 
+and narrow punctuation variety and will flag it as high AI probability as well. If both signals agree, that means a high 
+confidence score, but the system has no way to know whether this is right or wrong, it simply returns a score. 
+So what will the user see? A label that says "high-confidence AI" on a piece of human written text.
 
-Another specific scenario where a false positive could be triggered, is where a human who heavily uses repetition as a
+Another specific scenario where a false positive could be triggered, is where a human who heavily uses repetition as a 
 stylistic device, e.g., a poem with something like "We were tired. We were hungry. We were lost." Stylometrics will 
-analyze the piece of text and will into: low sentence length variance, possibly low TTR, and short, uniform sentences.
-This will most likely get triggered as AI. Then the LLM might also read the flatness as AI generated. What happens?
-Both signals agree → high confidence score → false positive.
+analyze the piece of text and find: low burstiness from the short, uniform sentences, and low punctuation entropy from 
+the repetitive structure. This will most likely get triggered as AI. Then the LLM might also read the flatness as AI 
+generated. What happens? Both signals agree → high confidence score → false positive.
 
 #### Appealing false positives
 In order to allow the creator to appeal these cases, a **`POST /appeal` endpoint** is provided to capture the creator's 
