@@ -14,12 +14,18 @@ def init_db() -> None:
     with get_connection() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
-                content_id          TEXT PRIMARY KEY,
-                creator_id          TEXT NOT NULL,
-                timestamp           TEXT NOT NULL,
-                status              TEXT NOT NULL DEFAULT 'classified',
-                llm_ai_probability  REAL,
-                llm_reasoning       TEXT
+                content_id              TEXT PRIMARY KEY,
+                creator_id              TEXT NOT NULL,
+                timestamp               TEXT NOT NULL,
+                status                  TEXT NOT NULL DEFAULT 'classified',
+                llm_ai_probability      REAL,
+                llm_reasoning           TEXT,
+                stylometrics_score      REAL,
+                burstiness_score        REAL,
+                punctuation_entropy_score REAL,
+                confidence              REAL,
+                label                   TEXT,
+                attribution             TEXT
             )
         """)
         conn.execute("""
@@ -67,6 +73,12 @@ def fetch_log() -> list[dict]:
                 s.status,
                 s.llm_ai_probability,
                 s.llm_reasoning,
+                s.stylometrics_score,
+                s.burstiness_score,
+                s.punctuation_entropy_score,
+                s.confidence,
+                s.label,
+                s.attribution,
                 a.creator_reasoning
             FROM submissions s
             LEFT JOIN appeals a ON s.content_id = a.content_id
@@ -91,15 +103,30 @@ def insert_submission(
     timestamp: str,
     llm_ai_probability: float,
     llm_reasoning: str,
+    stylometrics_score: float,
+    burstiness_score: float,
+    punctuation_entropy_score: float,
+    confidence: float,
+    label: str,
+    attribution: str,
 ) -> None:
     with get_connection() as conn:
         conn.execute(
             """
-            INSERT INTO submissions
-                (content_id, creator_id, timestamp, status, llm_ai_probability, llm_reasoning)
-            VALUES (?, ?, ?, 'classified', ?, ?)
+            INSERT INTO submissions (
+                content_id, creator_id, timestamp, status,
+                llm_ai_probability, llm_reasoning,
+                stylometrics_score, burstiness_score, punctuation_entropy_score,
+                confidence, label, attribution
+            )
+            VALUES (?, ?, ?, 'classified', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (content_id, creator_id, timestamp, llm_ai_probability, llm_reasoning),
+            (
+                content_id, creator_id, timestamp,
+                llm_ai_probability, llm_reasoning,
+                stylometrics_score, burstiness_score, punctuation_entropy_score,
+                confidence, label, attribution,
+            ),
         )
         conn.execute(
             "INSERT INTO submission_content (content_id, text) VALUES (?, ?)",

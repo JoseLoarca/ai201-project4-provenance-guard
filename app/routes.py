@@ -3,7 +3,7 @@ from datetime import datetime
 
 from flask import Blueprint, jsonify, request
 
-from app.llm_classifier import classify_text
+from app.pipeline import run
 from app.storage import fetch_log, insert_submission
 
 submit_bp = Blueprint("submit", __name__)
@@ -26,7 +26,7 @@ def submit():
         return jsonify({"error": "Missing or invalid field: 'creator_id' must be a non-empty string."}), 422
 
     try:
-        llm_result = classify_text(text)
+        result = run(text)
     except Exception:
         return jsonify({"error": "The evaluation could not be completed because an error occurred."}), 422
 
@@ -38,18 +38,22 @@ def submit():
         creator_id=creator_id,
         text=text,
         timestamp=timestamp,
-        llm_ai_probability=llm_result["ai_probability"],
-        llm_reasoning=llm_result["reasoning"],
+        llm_ai_probability=result["llm_ai_probability"],
+        llm_reasoning=result["llm_reasoning"],
+        stylometrics_score=result["stylometrics_score"],
+        burstiness_score=result["burstiness_score"],
+        punctuation_entropy_score=result["punctuation_entropy_score"],
+        confidence=result["confidence"],
+        label=result["label"],
+        attribution=result["attribution"],
     )
 
-    return jsonify(
-        {
-            "content_id": content_id,
-            "attribution": "This content was assessed as AI-generated (75% confidence).",
-            "confidence": 0.75,
-            "label": "Uncertain",
-        }
-    ), 200
+    return jsonify({
+        "content_id": content_id,
+        "attribution": result["attribution"],
+        "confidence": result["confidence"],
+        "label": result["label"],
+    }), 200
 
 
 @submit_bp.route("/log", methods=["GET"])
