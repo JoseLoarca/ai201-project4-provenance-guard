@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 _DB_PATH = Path("provenance_guard.db")
@@ -62,6 +63,15 @@ def insert_appeal(content_id: str, creator_reasoning: str, timestamp: str) -> No
         conn.commit()
 
 
+def _format_timestamp(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y%m%d%H%M%S").strftime("%Y-%m-%d %H:%M:%S UTC")
+    except ValueError:
+        return raw
+
+
 def fetch_log() -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -79,13 +89,21 @@ def fetch_log() -> list[dict]:
                 s.confidence,
                 s.label,
                 s.attribution,
-                a.creator_reasoning
+                a.creator_reasoning,
+                a.timestamp AS appeal_timestamp
             FROM submissions s
             LEFT JOIN appeals a ON s.content_id = a.content_id
             ORDER BY s.timestamp DESC
             """
         ).fetchall()
-        return [dict(row) for row in rows]
+
+        records = []
+        for row in rows:
+            record = dict(row)
+            record["timestamp"] = _format_timestamp(record["timestamp"])
+            record["appeal_timestamp"] = _format_timestamp(record["appeal_timestamp"])
+            records.append(record)
+        return records
 
 
 def get_submission(content_id: str) -> sqlite3.Row | None:

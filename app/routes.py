@@ -4,7 +4,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request
 
 from app.pipeline import run
-from app.storage import fetch_log, insert_submission
+from app.storage import fetch_log, get_submission, insert_appeal, insert_submission
 
 submit_bp = Blueprint("submit", __name__)
 
@@ -53,6 +53,42 @@ def submit():
         "attribution": result["attribution"],
         "confidence": result["confidence"],
         "label": result["label"],
+    }), 200
+
+
+@submit_bp.route("/appeal", methods=["POST"])
+def appeal():
+    body = request.get_json(silent=True)
+
+    if not body:
+        return jsonify({"error": "The appeal could not be processed because of: request body must be a JSON object."}), 422
+
+    content_id = body.get("content_id")
+    creator_reasoning = body.get("creator_reasoning")
+
+    if not content_id or not isinstance(content_id, str) or not content_id.strip():
+        return jsonify({"error": "The appeal could not be processed because of: missing or invalid field 'content_id'."}), 422
+
+    if not creator_reasoning or not isinstance(creator_reasoning, str) or not creator_reasoning.strip():
+        return jsonify({"error": "The appeal could not be processed because of: missing or invalid field 'creator_reasoning'."}), 422
+
+    submission = get_submission(content_id)
+    if submission is None:
+        return jsonify({"error": f"The appeal could not be processed because of: no submission found with id '{content_id}'."}), 422
+
+    if submission["status"] == "under_review":
+        return jsonify({"error": f"The appeal could not be processed because of: an appeal for '{content_id}' is already under review."}), 422
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+
+    try:
+        insert_appeal(content_id, creator_reasoning, timestamp)
+    except Exception:
+        return jsonify({"error": "The appeal could not be processed because of: an unexpected error occurred."}), 422
+
+    return jsonify({
+        "content_id": content_id,
+        "status": f"The appeal for the submission {content_id} was received, it is now under review.",
     }), 200
 
 
