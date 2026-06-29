@@ -1,4 +1,8 @@
+import uuid
+from datetime import UTC, datetime
+
 from app.llm_classifier import classify_text
+from app.storage import insert_submission
 from app.stylometrics import analyze
 
 
@@ -55,6 +59,38 @@ def get_attribution(label: str, final_score: float) -> str:
     if label == "clearly human":
         return f"This content was assessed as human-written ({confidence_pct}% confidence)."
     return f"This content could not be confidently attributed. Attribution is uncertain."
+
+
+def process_submission(text: str, creator_id: str) -> dict:
+    """
+    Runs the detection pipeline, persists the submission, and returns
+    the fields the route needs to build the API response.
+    """
+    result = run(text)
+    content_id = str(uuid.uuid4())
+    timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+
+    insert_submission(
+        content_id=content_id,
+        creator_id=creator_id,
+        text=text,
+        timestamp=timestamp,
+        llm_ai_probability=result["llm_ai_probability"],
+        llm_reasoning=result["llm_reasoning"],
+        stylometrics_score=result["stylometrics_score"],
+        burstiness_score=result["burstiness_score"],
+        punctuation_entropy_score=result["punctuation_entropy_score"],
+        confidence=result["confidence"],
+        label=result["label"],
+        attribution=result["attribution"],
+    )
+
+    return {
+        "content_id": content_id,
+        "attribution": result["attribution"],
+        "confidence": result["confidence"],
+        "label": result["label"],
+    }
 
 
 def run(text: str) -> dict:

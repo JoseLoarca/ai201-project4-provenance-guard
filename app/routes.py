@@ -1,10 +1,8 @@
-import uuid
-from datetime import datetime
-
 from flask import Blueprint, jsonify, request
 
-from app.pipeline import run
-from app.storage import fetch_log, get_submission, insert_appeal, insert_submission
+from app.appeals import AppealError, process_appeal
+from app.pipeline import process_submission
+from app.storage import fetch_log
 
 submit_bp = Blueprint("submit", __name__)
 
@@ -26,34 +24,11 @@ def submit():
         return jsonify({"error": "Missing or invalid field: 'creator_id' must be a non-empty string."}), 422
 
     try:
-        result = run(text)
+        result = process_submission(text, creator_id)
     except Exception:
         return jsonify({"error": "The evaluation could not be completed because an error occurred."}), 422
 
-    content_id = str(uuid.uuid4())
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-
-    insert_submission(
-        content_id=content_id,
-        creator_id=creator_id,
-        text=text,
-        timestamp=timestamp,
-        llm_ai_probability=result["llm_ai_probability"],
-        llm_reasoning=result["llm_reasoning"],
-        stylometrics_score=result["stylometrics_score"],
-        burstiness_score=result["burstiness_score"],
-        punctuation_entropy_score=result["punctuation_entropy_score"],
-        confidence=result["confidence"],
-        label=result["label"],
-        attribution=result["attribution"],
-    )
-
-    return jsonify({
-        "content_id": content_id,
-        "attribution": result["attribution"],
-        "confidence": result["confidence"],
-        "label": result["label"],
-    }), 200
+    return jsonify(result), 200
 
 
 @submit_bp.route("/appeal", methods=["POST"])
@@ -72,19 +47,10 @@ def appeal():
     if not creator_reasoning or not isinstance(creator_reasoning, str) or not creator_reasoning.strip():
         return jsonify({"error": "The appeal could not be processed because of: missing or invalid field 'creator_reasoning'."}), 422
 
-    submission = get_submission(content_id)
-    if submission is None:
-        return jsonify({"error": f"The appeal could not be processed because of: no submission found with id '{content_id}'."}), 422
-
-    if submission["status"] == "under_review":
-        return jsonify({"error": f"The appeal could not be processed because of: an appeal for '{content_id}' is already under review."}), 422
-
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-
     try:
-        insert_appeal(content_id, creator_reasoning, timestamp)
-    except Exception:
-        return jsonify({"error": "The appeal could not be processed because of: an unexpected error occurred."}), 422
+        process_appeal(content_id, creator_reasoning)
+    except AppealError as e:
+        return jsonify({"error": f"The appeal could not be processed because of: {e}"}), 422
 
     return jsonify({
         "content_id": content_id,
