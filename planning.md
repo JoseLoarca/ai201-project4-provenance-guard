@@ -61,53 +61,37 @@ We also perform a divergence check in this step. Let's say the LLM eval returns 
 stylometrics returned `0.20`(likely human). Both scores are on opposite ends. We performn a divergence check using the 
 following formula: `abs(llm_score - stylometrics_score) = divergence`, if the divergence is higher than `0.4`, both 
 sides are contradicting each other = clear uncertainty. If there is clear uncertainty, a final confidence score of 
-`0.5` is forced, which will later fall under the uncertain label.
+`0.5` is forced.
 
-Before producing a final label, we **map the final confidence score to internal labels**:
-1. Clearly AI-generated
-2. Borderline: lightly edited AI output
-3. Uncertain
-4. Borderline: formal human writing
-5. Clearly human written
-
-Internal labels will be mapped like this:
-* final_score >= 0.82  →  clearly AI generated
-* final_score >= 0.65  →  borderline: lightly edited AI output
-* final_score >= 0.35  →  uncertain
-* final_score >= 0.18  →  borderline: formal human writing
-* final_score <  0.18  →  clearly human written
+A label is then generated based on the following thresholds:
+* final_score >= 0.90  →  clearly AI
+* final_score >= 0.70  →  likely AI
+* final_score >= 0.30  →  uncertain
+* final_score >= 0.10  →  likely human
+* final_score <  0.10  →  clearly human
 
 These specifics numbers are built outward from 0.5 in a symmetric way, the idea behind this is to have the system
 treat 'likely AI' and 'likely human' with the same bar, it doesn't favor any side:
 ```
 The center here is 0.5:
-* 0.35 and 0.65 are both 0.15 away from 0.5
-* 0.18 and 0.82 are both 0.32 away from 0.5
-* the band on the left mirrors the band on the right, where 0.18 is the human equivalent of 0.82, and
-0.35 is the human equivalent of 0.65.
+* 0.30 and 0.70 are both 0.20 away from 0.5
+* 0.10 and 0.90 are both 0.40 away from 0.5
+* the band on the left mirrors the band on the right, where 0.10 is the human equivalent of 0.90, and
+0.30 is the human equivalent of 0.70.
 
-0.0 -------- 0.18 -------- 0.35 -------- 0.65 -------- 0.82 -------- 1.0
-     clearly      borderline     uncertain     borderline     clearly
-      human         human                        AI             AI
+0.0 -------- 0.10 -------- 0.30 -------- 0.70 -------- 0.90 -------- 1.0
+     clearly      likely       uncertain      likely        clearly
+      human        human                       AI             AI
 ```
 
-The goal of the internal labels is to have a transparent and testable logic. 
+Depending on the label, these are the messages that an end user could see:
+* clearly AI: `"This content was assessed as AI-generated (X% confidence)."`
+* likely AI: `"This content was likely AI-generated (X% confidence)."`
+* uncertain: `"This content could not be confidently attributed. Attribution is uncertain."`
+* likely human: `"This content was likely human-written (X% confidence)."`
+* clearly human: `"This content was assessed as human-written (X% confidence)."`
 
-The final step is to collapse internal labels into the final labels the user will see:
-
-* clearly AI → high-confidence AI
-* lightly edited AI output → uncertain (not high-confidence)
-* uncertain → uncertain
-* formal human writing → uncertain (not high-confidence)
-* clearly human written → high-confidence human
-
-Depending on the label, these are the messages that could be used:
-* high-confidence AI: "This content was assessed as AI-generated (X% confidence)."
-* high-confidence human: "This content was assessed as human-written (X% confidence)."
-* uncertain: "This content could not be confidently attributed (X% confidence). Attribution is uncertain."
-
-The goal of the transparency label is to communicate the attribution result in plain language and make the confidence 
-level meaningful to a non-technical reader. The flow ends after returning a final label that the user sees.
+Lastly, both the label and the attribution are returned. This is where the flow ends.
 
 ---
 ### Detection Signals
@@ -212,8 +196,7 @@ under review. If a human reviewer open's the appeal queue, they will be able to 
 - llm scoring
 - stylometrics scoring
 - confidence score
-- internal label
-- final label
+- label
 - attribution
 - creator's reasoning
 
@@ -318,8 +301,8 @@ The endpoint returns a `200 HTTP` status code and a JSON response with a list of
 #### Submission Flow
 In the submission flow, the `POST /submit` endpoint receives a piece of text and a creator id. We start by generating 
 a content_id for the submission, then the multi-signal detection pipeline evaluates the piece of text. Based on the results,
-a confidence score is computed, this gets converted into a final label, the task is logged and a response is returned
-to the user.
+a confidence score is computed, which is then used to generate the label and attribution, the task is logged and a 
+response is returned to the user.
 
 ```
 POST /submit
@@ -346,22 +329,28 @@ ai_probability  stylometrics_score
 weighted average + divergence check
         │
         v
-final_score + internal_label
+final_score
         │
         v
-[Transparency Label]
-maps internal_label → external label text
+[Label]
+maps final_score → label
+
+0.0 ---- 0.10 ---- 0.30 ---- 0.70 ---- 0.90 ---- 1.0
+ clearly   likely   uncertain  likely    clearly
+  human    human               AI        AI
+        │
+        v
+[Attribution]
+maps label → human-readable attribution string
         │
         v
 [Audit Log]
-content_id, creator_id, text, ai_probability,
-stylometrics_score, final_score, internal_label,
-external_label, timestamp
+content_id, creator_id, text, llm_ai_probability,
+stylometrics_score, confidence, label, attribution, timestamp
         │
         v
 [Response]
-content_id, attribution (human readable string that explains label),
-confidence (final_score), label (external_label)
+content_id, attribution, confidence, label
 ```
 
 #### Appeal Flow
