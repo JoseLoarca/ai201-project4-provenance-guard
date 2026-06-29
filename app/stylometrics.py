@@ -1,12 +1,15 @@
 import math
 import re
 
+from app.logger import get_session_logger
 
 # Non-standard punctuation marks tracked for entropy calculation.
 # Em dash is included as a separate high-weight signal given its documented
 # overuse in LLM output from markdown-heavy training data.
 _PUNCTUATION_MARKS = frozenset('.,!?;:—–…()"\'-')
 _EM_DASH = '—'
+
+logger = get_session_logger()
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -32,6 +35,7 @@ def _burstiness_score(lengths: list[int]) -> float:
       burstiness >= 0.60 → 0.0 (human)
       linear interpolation between 0.30 and 0.60
     """
+    logger.debug("Computing burstiness score.")
     if len(lengths) < 3:
         return 0.5
 
@@ -58,6 +62,7 @@ def _punctuation_entropy_score(text: str) -> float:
     Em dash frequency is added as a secondary component: high em dash usage
     pushes the score toward AI independently of entropy.
     """
+    logger.debug("Computing punctuation entropy score.")
     marks = [ch for ch in text if ch in _PUNCTUATION_MARKS]
 
     if not marks:
@@ -99,16 +104,21 @@ def analyze(text: str) -> dict:
       - punctuation entropy (40%): Shannon entropy over punctuation type
         distribution, with em dash frequency as a secondary component
     """
+    logger.debug(f"Analyzing text: {text}")
+
     sentences = _split_sentences(text)
     lengths = _sentence_lengths(sentences)
 
     burstiness = _burstiness_score(lengths)
+    logger.debug(f"Burstiness score: {burstiness:.2f}")
     punctuation_entropy = _punctuation_entropy_score(text)
+    logger.debug(f"Punctuation entropy: {punctuation_entropy:.2f}")
 
     stylometrics_score = round(
         0.60 * burstiness + 0.40 * punctuation_entropy,
         4,
     )
+    logger.debug(f"Final stylometrics score: {stylometrics_score:.2f}")
 
     return {
         "stylometrics_score": stylometrics_score,

@@ -2,8 +2,11 @@ import uuid
 from datetime import UTC, datetime
 
 from app.llm_classifier import classify_text
+from app.logger import get_session_logger
 from app.storage import insert_submission
 from app.stylometrics import analyze
+
+logger = get_session_logger()
 
 
 def compute_final_score(llm_score: float, stylometrics_score: float) -> float:
@@ -14,8 +17,10 @@ def compute_final_score(llm_score: float, stylometrics_score: float) -> float:
     Divergence check: if abs(llm_score - stylometrics_score) > 0.4, the signals
     contradict each other and the final score is forced to 0.5 (uncertain).
     """
+    logger.debug("Computing final score.")
     divergence = abs(llm_score - stylometrics_score)
     if divergence > 0.4:
+        logger.debug(f"Final score forced to 0.5, divergence: {divergence}.")
         return 0.5
     return round(0.65 * llm_score + 0.35 * stylometrics_score, 4)
 
@@ -98,6 +103,7 @@ def run(text: str) -> dict:
     Orchestrates the full multi-signal detection pipeline.
     Returns all fields needed for the API response and audit log.
     """
+    logger.debug("Running pipeline on new submission.")
     llm_result = classify_text(text)
     stylometrics_result = analyze(text)
 
@@ -107,6 +113,7 @@ def run(text: str) -> dict:
     final_score = compute_final_score(llm_score, stylometrics_score)
     label = get_label(final_score)
     attribution = get_attribution(label, final_score)
+    logger.debug("Pipeline execution completed.")
 
     return {
         "llm_ai_probability": llm_score,

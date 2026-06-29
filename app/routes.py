@@ -1,13 +1,15 @@
 from flask import Blueprint, jsonify, request
 
+from app import limiter
 from app.appeals import AppealError, process_appeal
 from app.pipeline import process_submission
 from app.storage import fetch_log
 
-submit_bp = Blueprint("submit", __name__)
+api_bp = Blueprint("api", __name__)
 
 
-@submit_bp.route("/submit", methods=["POST"])
+@api_bp.route("/submit", methods=["POST"])
+@limiter.limit("10 per minute;100 per day")
 def submit():
     body = request.get_json(silent=True)
 
@@ -31,7 +33,7 @@ def submit():
     return jsonify(result), 200
 
 
-@submit_bp.route("/appeal", methods=["POST"])
+@api_bp.route("/appeal", methods=["POST"])
 def appeal():
     body = request.get_json(silent=True)
 
@@ -58,6 +60,6 @@ def appeal():
     }), 200
 
 
-@submit_bp.route("/log", methods=["GET"])
+@api_bp.route("/log", methods=["GET"])
 def log():
     return jsonify(fetch_log()), 200
