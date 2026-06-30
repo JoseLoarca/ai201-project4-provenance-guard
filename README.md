@@ -14,14 +14,209 @@ creators who believe they've been misclassified.
 <!-- TOC -->
 * [Project #4: Provenance Guard](#project-4-provenance-guard)
   * [Table of Contents](#table-of-contents)
-    * [Rate Limiter results](#rate-limiter-results)
+  * [Main Flow Overview](#main-flow-overview)
+  * [Detection Signals](#detection-signals)
+    * [LLM-based classification](#llm-based-classification)
+    * [Stylometrics heuristics](#stylometrics-heuristics)
+      * [Why these metrics?](#why-these-metrics)
+  * [Confidence Scoring](#confidence-scoring)
+    * [How I validated these numbers are meaningful](#how-i-validated-these-numbers-are-meaningful)
+  * [Transparency Labels](#transparency-labels)
+  * [Rate Limiter](#rate-limiter)
+  * [Known Limitations](#known-limitations)
+  * [Spec Reflection](#spec-reflection)
+  * [AI Usage Section](#ai-usage-section)
+    * [Milestone #3: submission endpoint + first signal](#milestone-3-submission-endpoint--first-signal)
+    * [Stretch feature: analytics dashboard](#stretch-feature-analytics-dashboard)
 <!-- TOC -->
 
 ---
+## Main Flow Overview
+This section shows an overview of the path a submission takes from input to transparency label.
 
-### Rate Limiter results
-Ran the following command to test the Rate Limiter on `POST /submit`:
+The path starts with the submission of a piece of text, this could be a poem, a short story excerpt, a blog post, etc. 
+The system exposes a **`POST` endpoint `/submit`** to receive submissions. 
+
+Once a piece of text has been received, the next step is to run a **multi-signal detection pipeline**. This pipeline is a 2 
+signal that uses the following strategies:
+1. **LLM-based classification**: powered by llama-3.3-70b-versatile via Groq, we use an LLM call to assess whether the text
+   reads as human or AI-generated. 
+2. **Stylometrics heuristics**: using pure Python, we measure 2 specific aspects that differ from human and 
+AI writing: sentence length variance (burstiness) and the punctuation entropy.
+
+Both strategies return a score in a range from 0.0 to 1.0 that represent the likelihood of AI-generated text (the higher,
+the more likely it is AI-generated).
+
+Using the results from the pipeline, a **weighted average score is computed**: 65% LLM score, 35% stylometrics heuristics.
+This is our confidence score. A weighted average is used as the LLM classification should produce a richer signal, 
+while stylometrics heuristics can misfire on formal human writing or casual AI output. 
+
+We also perform a divergence check in this step. Let's say the LLM eval returns a score of `0.85` (likely AI), while the 
+stylometrics returned `0.20`(likely human). Both scores are on opposite ends. We performn a divergence check using the 
+following formula: `abs(llm_score - stylometrics_score) = divergence`, if the divergence is higher than `0.4`, both 
+sides are contradicting each other = clear uncertainty. If there is clear uncertainty, a final confidence score of 
+`0.5` is forced.
+
+A label is then generated based on the following thresholds:
+* final_score >= 0.90  →  clearly AI
+* final_score >= 0.70  →  likely AI
+* final_score >= 0.30  →  uncertain
+* final_score >= 0.10  →  likely human
+* final_score <  0.10  →  clearly human
+
+These specifics numbers are built outward from 0.5 in a symmetric way, the idea behind this is to have the system
+treat 'likely AI' and 'likely human' with the same bar, it doesn't favor any side:
 ```
+The center here is 0.5:
+* 0.30 and 0.70 are both 0.20 away from 0.5
+* 0.10 and 0.90 are both 0.40 away from 0.5
+* the band on the left mirrors the band on the right, where 0.10 is the human equivalent of 0.90, and
+0.30 is the human equivalent of 0.70.
+
+0.0 -------- 0.10 -------- 0.30 -------- 0.70 -------- 0.90 -------- 1.0
+     clearly      likely       uncertain      likely        clearly
+      human        human                       AI             AI
+```
+
+Depending on the label, these are the messages that an end user could see:
+* clearly AI: `"This content was assessed as AI-generated (X% confidence)."`
+* likely AI: `"This content was likely AI-generated (X% confidence)."`
+* uncertain: `"This content could not be confidently attributed. Attribution is uncertain."`
+* likely human: `"This content was likely human-written (X% confidence)."`
+* clearly human: `"This content was assessed as human-written (X% confidence)."`
+
+Lastly, both the label and the attribution are returned. This is where the flow ends.
+
+---
+## Detection Signals
+### LLM-based classification
+The LLM-based classification focuses on patterns it learned during the model training. 
+
+It picks up on:
+* **Word choice**: AI plays it safe. Humans make unexpected, personal word choices.
+* **Structure**: AI follows predictable patterns. Human writing meanders and surprises.
+* **Filler phrases**: AI overuses transitions and hedges ("It's worth noting…"). Humans don't.
+* **Tone**: AI stays flat and even. Human writing shifts mood and intensity.
+
+But the most important aspect of this detection signal is that it doesn't return individual metrics, it returns a 
+'holistic' evaluation where all of these characteristics are measured simultaneously.
+
+Some blind spots for this detection signal are:
+* The writing process: it only sees the final text. This means AI output that was heavily edited by a human can pass
+as human written, or a human who writes very clean and deliberately will be flagged as AI.
+* Bias: the model recognizes AI writing by patterns it learned during training. AI generated text that doesn't match those 
+learned patterns may get misclassified. The same applies in reverse: a human who writes cleanly and formally may trigger 
+the same patterns the model associates with AI.
+* Text domain: formal academic writing, legal text, and technical documentation may all have the same surface properties 
+as AI output (uniform, structured, hedged).
+
+### Stylometrics heuristics
+Stylometrics measures the statistical shape of writing. Instead of focusing on what the text says, it focuses on its
+structure.
+
+The three metrics that will be used capture a different dimension of the structure:
+* **Sentence length variance (burstiness)**: how much sentence length fluctuates throughout a piece of text
+* **Punctuation entropy**: measures how evenly distributed punctuation is across different mark types
+
+AI writing is optimized for clarity and fluency, which results on statistical uniformity. Human written text is known 
+for being irregular.
+
+Some blind spots for this detection signal are:
+* Text length dependency: burstiness requires enough sentences to produce a meaningful standard deviation. 
+Short texts under 5–6 sentences will produce unreliable scores regardless of the author.
+* Text domain: formal academic writing, legal text, and journalism are written by humans but naturally have low 
+burstiness: structured, uniform sentence lengths are a feature of that style, not a sign of AI.
+* Writing style: a minimalist human writer who deliberately uses short, consistent sentences will score as AI on 
+burstiness. A maximalist AI prompt with varied sentence lengths can pass as human.
+* Punctuation conventions: some genres naturally use narrow punctuation sets, e.g., screenplays, legal contracts, 
+technical documentation. This is not because they are AI-generated, but because their format constrains punctuation 
+choice. This will produce low entropy scores on human-written text.
+* Model evolution: AI punctuation fingerprints (em dash overuse, semicolon frequency) are artifacts of current training 
+data. As training data and fine-tuning evolve, these patterns may shift, reducing the reliability of punctuation entropy 
+as a long-term signal.
+
+#### Why these metrics?
+I am adding this section to further explain why my stylometrics heuristics evaluation is using burstiness and punctuation
+entropy, as they feel rather complex, and it took me some time to fully understand them. 
+
+Let's start with burstiness: it measures how much sentence length fluctuates throughout a piece of text. The formula is 
+σ / μ: standard deviation of sentence lengths divided by their mean. A high burstiness score means the writing alternates 
+between short and long sentences unpredictably. A low score means sentence lengths are uniform throughout.
+
+Human writing is naturally bursty. While AI writing is optimized for fluency and coherence at the token level, which 
+produces sentences of similar length throughout. This is backed by research on LLM output patterns, and is also known to
+be used by AI detectors such as GPTZero. Human writing scores 0.65–0.85, AI models score 0.15–0.30. This gap is large 
+enough that burstiness alone is one of the strongest single signals in stylometric detection.
+
+Now, punctuation entropy: it measures how evenly distributed punctuation is across different mark types. Here, high 
+entropy means many different marks appear with varied frequency, the pattern is unpredictable. Low entropy means a 
+narrow set of marks dominates uniformly. Human writing produces messier and more varied distributions. On the other side, 
+AI uses a narrow, predictable set of marks uniformly. AI also overuses semicolons and underuses ellipses, 
+apostrophes (contractions), and exclamation marks.
+
+Punctuation entropy is therefore a strong signal because AI punctuation is "polished" in a way that's statistically 
+detectable: low entropy, over-reliance on a small subset of marks.
+
+Sources worth reading to understand these metrics:
+- [Feature-Based Detection of AI-Generated Text: An Analysis of Stylometric and Perplexity Markers in Contemporary Large Language Models](https://www.researchgate.net/publication/398588043_Feature-Based_Detection_of_AI-Generated_Text_An_Analysis_of_Stylometric_and_Perplexity_Markers_in_Contemporary_Large_Language_Models)
+- [The Last Fingerprint: How Markdown Training Shapes LLM Prose](https://arxiv.org/pdf/2603.27006)
+- [Stylometric Detection of AI-Generated Text in Twitter Timelines](https://arxiv.org/pdf/2303.03697)
+- [Can Stylometry Detect AI Authorship? Methods Explained](https://hastewire.com/blog/can-stylometry-detect-ai-authorship-methods-explained)
+
+---
+## Confidence Scoring
+
+Right now, the final score is computed using a **weighted average**: 65% LLM score, 35% stylometrics heuristics. A 
+weighted average is used as the LLM classification should produce a richer signal, while stylometrics heuristics can 
+misfire on formal human writing or casual AI output. 
+
+When computing the final score, a divergence check is also made. Let's say the LLM eval returns a score of `0.85` 
+(likely AI), while the stylometrics returned `0.20`(likely human). Both scores are on opposite ends. 
+We performn a divergence check using the following formula: `abs(llm_score - stylometrics_score) = divergence`, if the 
+divergence is higher than `0.4`, both sides are contradicting each other = clear uncertainty. If there is clear 
+uncertainty, a final confidence score of `0.5` is forced.
+
+### How I validated these numbers are meaningful
+The 65%-35% weighted average scoring was a judgment call. Like mentioned earlier, the LLM-based signal **_should_**
+produce a richer evaluation, while the stylometrics signal is narrower, so in my opinion the LLM should carry more weight.
+
+Right now, these numbers meet my expectations, in my last test run 6 out of 8 examples were classified correctly. 
+
+To achieve **real meaningful** numbers (no intuition), I'd tune my weights using a labeled dataset. For example,
+using a labeled dataset, I'd run multiple sets of tests using different weight combinations: 50/50, 60/40, 70/30, 80/20
+and see which one returns the least amount of misclassifications. 
+
+---
+## Transparency Labels
+These are the thresholds used to generate labels:
+* final_score >= 0.90  →  clearly AI
+* final_score >= 0.70  →  likely AI
+* final_score >= 0.30  →  uncertain
+* final_score >= 0.10  →  likely human
+* final_score <  0.10  →  clearly human
+
+And for each label, a different attribution message is shown:
+
+* clearly AI: `"This content was assessed as AI-generated (X% confidence)."`
+* likely AI: `"This content was likely AI-generated (X% confidence)."`
+* uncertain: `"This content could not be confidently attributed. Attribution is uncertain."`
+* likely human: `"This content was likely human-written (X% confidence)."`
+* clearly human: `"This content was assessed as human-written (X% confidence)."`
+
+---
+## Rate Limiter
+A rate limiter was implemented for the `POST /submit` endpoint using the following values:
+* max 10 reqs per sec
+* max 100 reqs per day
+
+I think these numbers make sense for this project because:
+* Right now we rely on Groq's free tier. Groq also has its own Rate Limits, and we want to make sure we don't hit those
+numbers so that the project remains available.
+* This project is not a search engine or something that needs to be used frequently. A maximum of 100 requests per day
+makes sense as a creator who is submitting their content doesn't need to make 100 submissions per day.
+
+I ran the following command to test the Rate Limiter on `POST /submit`:
+```bash
 $ for i in $(seq 1 12); do
   curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:5000/submit \
     -H "Content-Type: application/json" \
@@ -29,7 +224,7 @@ $ for i in $(seq 1 12); do
 done
 ```
 Results:
-```
+```text
 127.0.0.1 - - [29/Jun/2026 15:11:35] "POST /submit HTTP/1.1" 200 -
 127.0.0.1 - - [29/Jun/2026 15:11:36] "POST /submit HTTP/1.1" 200 -
 127.0.0.1 - - [29/Jun/2026 15:11:37] "POST /submit HTTP/1.1" 200 -
@@ -43,3 +238,80 @@ Results:
 127.0.0.1 - - [29/Jun/2026 15:11:40] "POST /submit HTTP/1.1" 429 -
 127.0.0.1 - - [29/Jun/2026 15:11:40] "POST /submit HTTP/1.1" 429 -
 ```
+---
+## Known Limitations
+False positives are something that will eventually happen. Cases like a human writer that submits a clean, formally 
+structured piece of text are highly likely to trigger a false positive. Why? The LLM-based classification will see: 
+flat tone, predictable structure, safe wording and flag it as high AI probability. Stylometrics will see low burstiness 
+and narrow punctuation variety and will flag it as high AI probability as well. If both signals agree, that means a high 
+confidence score, but the system has no way to know whether this is right or wrong, it simply returns a score. 
+So what will the user see? A label that says "high-confidence AI" on a piece of human written text.
+
+Another specific scenario where a false positive could be triggered, is where a human who heavily uses repetition as a 
+stylistic device, e.g., a poem with something like "We were tired. We were hungry. We were lost." Stylometrics will 
+analyze the piece of text and find: low burstiness from the short, uniform sentences, and low punctuation entropy from 
+the repetitive structure. This will most likely get triggered as AI. Then the LLM might also read the flatness as AI 
+generated. What happens? Both signals agree → high confidence score → false positive.
+
+---
+## Spec Reflection
+One way the spec helped me was with the architecture of the project. I had a strong submission path section, as well
+as clear and detailed overviews of the `POST /submit`, `POST /appeal`, and `GET /log` endpoints. This made working on 
+each endpoint easier, as the requirements were clear. Implementing the evaluation pipeline was easy and straightforward
+too, as all the steps were clear and defined in the right order since the beginning.
+
+One way my implementation diverged from my spec was when labeling the submissions. I initially overcomplicated my labels
+and label thresholds: 
+- My first version contemplated having 5 internal label that at the end of the flow were collapsed into 3 different
+final labels. This just added another complexity layer as I had to handle different layers, plus my "final labels" were
+too narrow and everything was being labeled as "uncertain".
+- After re-adjusting my label implementation, I noticed my threshold were being too conservative, and I was still running
+into the same problem: everything labeled as "uncertain". After adjusting my thresholds I finally found a sweet spot 
+where the evaluations actually felt meaningful.
+
+I always find writing a spec with specific numbers/tresholds challenging, as when you start testing you realize some of
+them need to be adjusted.
+
+---
+## AI Usage Section
+
+### Milestone #3: submission endpoint + first signal
+_**What I gave the AI**_:
+I gave the AI the following sections of my spec (planning.md): POST /submit, Submission Flow, and LLM-based classification.
+
+_**What I asked it to generate**_:
+I'll ask it to generate:
+* A RESTful Flask app skeleton.
+* A basic `POST /submit` endpoint that receives a JSON and returns a static response.
+* A function that receives a piece of text and uses an LLM call to determine if the piece of text was AI generated.
+
+_**How did I verify the output**_:
+I manually tested the `POST /submit` endpoint using Postman. I tested the following scenarios: a request with an empty 
+body, a request with a correct JSON body containing a submission and a creator id. 
+
+For the LLM function, I tested it using poems, short stories, and blog posts both human and AI generated (GPT-5.5).
+
+I had to adjust the following output from the AI:
+* All the logic was in the `routes.py` file so it had to be moved. 
+* The prompt used for AI call to make sure it captured semantic and stylistic coherence holistically.
+
+### Stretch feature: analytics dashboard
+_**What I gave the AI**_:
+I gave the AI the following prompt (it already had context of the project): 
+```
+Generate an analytics dashboard powered by streamlit that shows the following 3
+metrics:
+* AI vs Human verdict ratio
+* Submissions appeal rate
+* Average confidence per label
+
+This version is a mockup, so it should show fake data.
+```
+
+_**How did I verify the output**_:
+I reviewed the dashboard to make sure it correctly displayed the requested metrics. Once I confirmed each
+section was intended to display what I requested, I asked to update the dashboard so that it showed real data.
+
+The dashboard relies on data from `GET /log`, so no new endpoints had to be implemented.
+
+---
