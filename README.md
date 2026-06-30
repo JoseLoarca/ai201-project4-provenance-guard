@@ -21,6 +21,7 @@ creators who believe they've been misclassified.
       * [Why these metrics?](#why-these-metrics)
   * [Confidence Scoring](#confidence-scoring)
     * [How I validated these numbers are meaningful](#how-i-validated-these-numbers-are-meaningful)
+    * [Examples of results](#examples-of-results)
   * [Transparency Labels](#transparency-labels)
   * [Rate Limiter](#rate-limiter)
   * [Known Limitations](#known-limitations)
@@ -185,6 +186,63 @@ Right now, these numbers meet my expectations, in my last test run 6 out of 8 ex
 To achieve **real meaningful** numbers (no intuition), I'd tune my weights using a labeled dataset. For example,
 using a labeled dataset, I'd run multiple sets of tests using different weight combinations: 50/50, 60/40, 70/30, 80/20
 and see which one returns the least amount of misclassifications. 
+
+### Examples of results
+This table shows the evaluation results for:
+
+<details>
+
+<summary>AI generated Sonnet</summary>
+
+```text
+When silver rain has washed the weary stone,
+The waking earth exhales a gentle sigh.
+Each leaf reflects a world once dim, now shown,
+As clouds retreat and swallows learn the sky.
+
+A humble seed beneath the softened ground
+Keeps patient faith through darkness, cold, and time.
+It does not seek the loudest, grandest sound,
+But rises slowly in a silent climb.
+
+So may the heart, though burdened by the years,
+Find steady light where hurried eyes see none.
+Let hope take root beyond remembered fears,
+And bloom beneath the kindness of the sun.
+
+For every storm that bids the daylight cease,
+Leaves in its wake the quiet gift of peace.
+```
+</details>
+
+<details>
+
+<summary>AI generated short cat story</summary>
+
+```text
+Every morning I wake up ten minutes before my human’s alarm because someone in this house has to keep the schedule. I stretch one paw at a time, yawn with appropriate drama, and walk across the bed to inspect whether they’re still alive. They usually make a strange grumbling noise when I step on their chest, but moments later they thank me by filling my breakfast bowl. I accept their gratitude with quiet dignity, even though they never seem to appreciate how much work goes into supervising a household.
+
+Once breakfast is complete, I begin my rounds. The windows must be inspected for birds, the hallway rug must be tested for optimal napping conditions, and every cardboard box must be evaluated for structural integrity by sitting inside it. Around midday I patrol the kitchen in case cheese, chicken, or any other valuable resources accidentally fall to the floor. My human calls this “begging.” I call it emergency response.
+
+By evening the sun paints warm squares across the living room floor, and I settle into my favorite one as though I personally arranged the light. My human sits nearby with a book, occasionally reaching over to scratch behind my ears. I pretend not to care for at least a few seconds before leaning into their hand with an involuntary purr. It’s important to maintain professional standards, after all. Running a home is exhausting work, but someone has to do it, and fortunately for this family, they have me.
+```
+</details>
+
+
+| Metric                        | AI Sonnet | Cat Story (AI) |
+|-------------------------------|-----------|----------------|
+| **LLM Score**                 | 0.800     | 0.200          |
+| **Stylometrics Score**        | 0.824     | 0.731          |
+| **Burstiness Score**          | 1.000     | 0.850          |
+| **Punctuation Entropy Score** | 0.560     | 0.553          |
+| **Signal Divergence**         | 0.024     | 0.531          |
+| **Final Score**               | 0.808     | 0.500 ⚠️       |
+| **Label**                     | likely AI | uncertain      |
+| **Confidence**                | 81%       | —              |
+
+> ⚠️ The cat story triggered the divergence check: the LLM scored it as likely human (0.2) while stylometrics flagged 
+> it as likely AI (0.731). Because the signals contradicted each other by more than the 0.4 threshold, the final score 
+> was forced to 0.5 and the system declined to make a confident attribution.
 
 ---
 ## Transparency Labels
